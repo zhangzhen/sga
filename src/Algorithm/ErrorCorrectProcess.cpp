@@ -165,6 +165,7 @@ ErrorCorrectResult ErrorCorrectProcess::overlapCorrectionNew(const SequenceWorkI
     ErrorCorrectResult result;
     SeqRecord currRead = workItem.read;
     std::string current_sequence = workItem.read.seq.toString();
+    std::string mate_sequence = BWTAlgorithms::extractMateStringFor(m_params.indices.pBWT, workItem.idx);
     std::string consensus;
 
     int num_rounds = m_params.numOverlapRounds;
@@ -172,6 +173,7 @@ ErrorCorrectResult ErrorCorrectProcess::overlapCorrectionNew(const SequenceWorkI
     {
         // Construct the multiple alignment
         MultipleAlignment multiple_alignment = KmerOverlaps::buildMultipleAlignment(current_sequence,
+                                                                                    mate_sequence,
                                                                                     m_params.kmerLength,
                                                                                     m_params.minOverlap,
                                                                                     m_params.minIdentity,

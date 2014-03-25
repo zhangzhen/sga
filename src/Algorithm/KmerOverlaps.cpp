@@ -30,6 +30,22 @@ MultipleAlignment KmerOverlaps::buildMultipleAlignment(const std::string& query,
     return multiple_alignment;
 }
 
+MultipleAlignment KmerOverlaps::buildMultipleAlignment(const std::string& query,
+                                                       const std::string& mate,
+                                                       size_t k,
+                                                       int min_overlap,
+                                                       double min_identity,
+                                                       int bandwidth,
+                                                       const BWTIndexSet& indices)
+{
+    SequenceOverlapPairVector overlap_vector = retrieveMatches(query, mate, k, min_overlap, min_identity, bandwidth, indices);
+    MultipleAlignment multiple_alignment;
+    multiple_alignment.addBaseSequence("query", query, "");
+    for(size_t i = 0; i < overlap_vector.size(); ++i)
+        multiple_alignment.addOverlap("null", overlap_vector[i].sequence[1], "", overlap_vector[i].overlap);
+    return multiple_alignment;
+}
+
 // Struct to hold a partial match in the FM-index
 // The position field is the location in the query sequence of this kmer.
 // The index field is an index into the BWT. 
@@ -462,4 +478,151 @@ SequenceOverlapPairVector KmerOverlaps::approximateMatch(const std::string& quer
     _approximateSeededMatch(query, min_overlap, min_identity, bandwidth, max_interval, false, indices, opv);
     _approximateSeededMatch(query, min_overlap, min_identity, bandwidth, max_interval, true, indices, opv);
     return opv;
+}
+
+
+SequenceOverlapPairVector KmerOverlaps::retrieveMatches(const std::string &query, const std::string& mate, size_t k, int min_overlap, double min_identity, int bandwidth, const BWTIndexSet &indices)
+{
+    assert(indices.pBWT != NULL);
+    assert(indices.pSSA != NULL);
+
+    static size_t n_calls = 0;
+    static size_t n_candidates = 0;
+    static size_t n_output = 0;
+    static double t_time = 0;
+    Timer timer("test", true);
+
+    n_calls++;
+
+    int64_t max_interval_size = 200;
+    SequenceOverlapPairVector overlap_vector;
+
+    // Use the FM-index to look up intervals for each kmer of the read. Each index
+    // in the interval is stored individually in the KmerMatchMap. We then
+    // backtrack to map these kmer indices to read IDs. As reads can share
+    // multiple kmers, we use the map to avoid redundant lookups.
+    // There is likely a faster algorithm which performs direct decompression
+    // of the read sequences without having to expand the intervals to individual
+    // indices. The current algorithm suffices for now.
+    KmerMatchMap prematchMap;
+    size_t num_kmers = query.size() - k + 1;
+    for(size_t i = 0; i < num_kmers; ++i)
+    {
+        std::string kmer = query.substr(i, k);
+        BWTInterval interval = BWTAlgorithms::findInterval(indices, kmer);
+        if(interval.isValid() && interval.size() < max_interval_size)
+        {
+            for(int64_t j = interval.lower; j <= interval.upper; ++j)
+            {
+                KmerMatch match = { i, static_cast<size_t>(j), false };
+                prematchMap.insert(std::make_pair(match, false));
+            }
+        }
+
+    }
+
+    // Backtrack through the kmer indices to turn them into read indices.
+    // This mirrors the calcSA function in SampledSuffixArray except we mark each entry
+    // as visited once it is processed.
+    KmerMatchSet matches;
+    for(KmerMatchMap::iterator iter = prematchMap.begin(); iter != prematchMap.end(); ++iter)
+    {
+        // This index has been visited
+        if(iter->second)
+            continue;
+
+        // Mark this as visited
+        iter->second = true;
+
+        // Backtrack the index until we hit the starting symbol
+        KmerMatch out_match = iter->first;
+        while(1)
+        {
+            char b = indices.pBWT->getChar(out_match.index);
+            out_match.index = indices.pBWT->getPC(b) + indices.pBWT->getOcc(b, out_match.index - 1);
+
+            // Check if the hash indicates we have visited this index. If so, stop the backtrack
+            KmerMatchMap::iterator find_iter = prematchMap.find(out_match);
+            if(find_iter != prematchMap.end())
+            {
+                // We have processed this index already
+                if(find_iter->second)
+                    break;
+                else
+                    find_iter->second = true;
+            }
+
+            if(b == '$')
+            {
+                // We've found the lexicographic index for this read. Turn it into a proper ID
+                out_match.index = indices.pSSA->lookupLexoRank(out_match.index);
+                matches.insert(out_match);
+                break;
+            }
+        }
+    }
+
+    // Refine the matches by computing proper overlaps between the sequences
+    // Use the overlaps that meet the thresholds to build a multiple alignment
+    for(KmerMatchSet::iterator iter = matches.begin(); iter != matches.end(); ++iter)
+    {
+        std::string match_sequence = BWTAlgorithms::extractString(indices.pBWT, iter->index);
+        std::string match_mate = BWTAlgorithms::extractMateStringFor(indices.pBWT, iter->index);
+
+        // Ignore identical matches
+        if(match_sequence == query)
+            continue;
+
+        // Compute the overlap. If the kmer match occurs a single time in each sequence we use
+        // the banded extension overlap strategy. Otherwise we use the slow O(M*N) overlapper.
+        SequenceOverlap overlap;
+        std::string match_kmer = query.substr(iter->position, k);
+        size_t pos_0 = query.find(match_kmer);
+        size_t pos_1 = match_sequence.find(match_kmer);
+        assert(pos_0 != std::string::npos && pos_1 != std::string::npos);
+
+        // Check for secondary occurrences
+        if(query.find(match_kmer, pos_0 + 1) != std::string::npos ||
+           match_sequence.find(match_kmer, pos_1 + 1) != std::string::npos) {
+            // One of the reads has a second occurrence of the kmer. Use
+            // the slow overlapper.
+            overlap = Overlapper::computeOverlap(query, match_sequence);
+        } else {
+            overlap = Overlapper::extendMatch(query, match_sequence, pos_0, pos_1, bandwidth);
+        }
+
+        n_candidates += 1;
+
+        if(isValidOverlap(overlap, min_overlap, min_identity) && hasValidOverlap(mate, match_mate, min_overlap, min_identity))
+        {
+            SequenceOverlapPair op;
+            op.sequence[0] = query;
+            op.sequence[1] = match_sequence;
+            op.overlap = overlap;
+            op.is_reversed = iter->is_reverse;
+            overlap_vector.push_back(op);
+            n_output += 1;
+        }
+    }
+
+    t_time += timer.getElapsedCPUTime();
+
+    if(Verbosity::Instance().getPrintLevel() > 6 && n_calls % 100 == 0)
+        printf("[kmer overlaps] n: %zu candidates: %zu valid: %zu (%.2lf) time: %.2lfs\n",
+            n_calls, n_candidates, n_output, (double)n_output / n_candidates, t_time);
+    return overlap_vector;
+}
+
+
+bool KmerOverlaps::hasValidOverlap(const std::string &s1, const std::string &s2, int min_overlap, double min_identity)
+{
+    SequenceOverlap overlap;
+    overlap = Overlapper::computeOverlap(s1, s2);
+    return isValidOverlap(overlap, min_overlap, min_identity);
+}
+
+
+bool KmerOverlaps::isValidOverlap(const SequenceOverlap &overlap, int min_overlap, double min_identity)
+{
+    return overlap.getOverlapLength() >= min_overlap && overlap.getPercentIdentity() / 100 >= min_identity;
 }

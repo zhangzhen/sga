@@ -171,6 +171,8 @@ AlphaCount64 calculateDeBruijnExtensionsSingleIndex(const std::string str,
 // Extract the complete string starting at idx in the BWT
 std::string extractString(const BWT* pBWT, size_t idx);
 
+std::string extractMateStringFor(const BWT* pBWT, size_t idx);
+
 // Extract the next len bases of the string starting at idx
 std::string extractString(const BWT* pBWT, size_t idx, size_t len);
 

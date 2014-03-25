@@ -504,3 +504,9 @@ std::string BWTAlgorithms::extractUntilInterval(const BWT* pBWT, int64_t start, 
     } 
     return reverse(out);        
 }
+
+
+std::string BWTAlgorithms::extractMateStringFor(const BWT *pBWT, size_t idx)
+{
+    return extractString(pBWT, idx % 2 == 0 ? idx + 1 : idx - 1);
+}

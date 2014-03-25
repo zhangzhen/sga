@@ -37,6 +37,14 @@ MultipleAlignment buildMultipleAlignment(const std::string& query,
                                          int bandwidth,
                                          const BWTIndexSet& indices);
 
+MultipleAlignment buildMultipleAlignment(const std::string& query,
+                                         const std::string& mate,
+                                         size_t k,
+                                         int min_overlap,
+                                         double min_identity,
+                                         int bandwidth,
+                                         const BWTIndexSet& indices);
+
 // Retrieve matches to the query sequence
 SequenceOverlapPairVector retrieveMatches(const std::string& query, 
                                           size_t k,
@@ -45,12 +53,30 @@ SequenceOverlapPairVector retrieveMatches(const std::string& query,
                                           int bandwidth,
                                           const BWTIndexSet& indices);
 
+// Retrieve mateches to the query sequece with support of mate overlaps
+SequenceOverlapPairVector retrieveMatches(const std::string& query,
+                                          const std::string& mate,
+                                          size_t k,
+                                          int min_overlap,
+                                          double min_identity,
+                                          int bandwidth,
+                                          const BWTIndexSet& indices);
+
 SequenceOverlapPairVector approximateMatch(const std::string& query,
-                                           int min_overlap, 
+                                           int min_overlap,
                                            double min_identity,
-                                           int bandwidth, 
+                                           int bandwidth,
                                            int max_interval,
                                            const BWTIndexSet& indices);
+
+bool hasValidOverlap(const std::string& s1,
+                     const std::string& s2,
+                     int min_overlap,
+                     double min_identity);
+
+bool isValidOverlap(const SequenceOverlap& overlap,
+                    int min_overlap,
+                    double min_identity);
 };
 
 #endif
